@@ -33,24 +33,67 @@ impl MemCache {
     }
 
     pub fn subgroup(&self, prefix: impl Into<String>) -> Self {
-        let prefix = self.key(prefix);
         Self {
             storage: Arc::clone(&self.storage),
-            prefix,
+            prefix: format!("{}::{}", self.prefix, prefix.into()),
         }
-    }
-
-    fn key<K: Into<String>>(&self, key: K) -> String {
-        let key: String = key.into();
-        format!("{}::{}", self.prefix, key)
     }
 
     pub async fn get<K, V>(&self, key: K) -> Option<V>
     where
-        K: Into<String>,
+        K: Serialize,
         V: for<'de> Deserialize<'de>,
     {
-        let key = self.key(key);
+        let key = self._key(key);
+        self._get(key).await
+    }
+
+    pub async fn set<K: Serialize, V: Serialize>(
+        &self,
+        key: K,
+        value: V,
+        expires_in: Option<Duration>,
+    ) -> Option<V> {
+        let key = self._key(key);
+        self._set(key, value, expires_in).await
+    }
+
+    pub async fn remove<K: Serialize>(&self, key: K) {
+        let key = self._key(key);
+        self._remove(key).await
+    }
+
+    pub async fn cached<F, Fut, K, V, E>(
+        &self,
+        action_fn: F,
+        key: K,
+        expires_in: Option<Duration>,
+    ) -> Result<V, E>
+    where
+        K: Serialize,
+        V: for<'de> Deserialize<'de> + Serialize,
+        Fut: Future<Output = Result<V, E>>,
+        F: FnOnce() -> Fut + Send + 'static,
+    {
+        let key = self._key(key);
+
+        let data = self._get(key.clone()).await;
+        if let Some(data) = data {
+            return Ok(data);
+        }
+        let value = action_fn().await?;
+        let value = self
+            ._set(key, value, expires_in)
+            .await
+            .expect("failed to set cache");
+
+        Ok(value)
+    }
+
+    async fn _get<V>(&self, key: String) -> Option<V>
+    where
+        V: for<'de> Deserialize<'de>,
+    {
         let mut storage = self.storage.write().await;
         let data = storage.get(&key)?;
 
@@ -64,20 +107,10 @@ impl MemCache {
         bincode::deserialize(&data.value).ok()
     }
 
-    pub async fn remove<K: Into<String>>(&self, key: K) {
-        let key = self.key(key);
-        let mut storage = self.storage.write().await;
-        storage.remove(&key);
-    }
-
-    pub async fn set<K: Into<String>, V: Serialize>(
-        &self,
-        key: K,
-        value: V,
-        expires_in: Option<Duration>,
-    ) -> Option<V> {
-        let key = self.key(key);
-
+    async fn _set<V>(&self, key: String, value: V, expires_in: Option<Duration>) -> Option<V>
+    where
+        V: Serialize,
+    {
         let value_data = bincode::serialize(&value).ok()?;
         let mut storage = self.storage.write().await;
         storage.insert(
@@ -91,30 +124,15 @@ impl MemCache {
         Some(value)
     }
 
-    pub async fn cached<F, Fut, K, V, E>(
-        &self,
-        action_fn: F,
-        key: K,
-        expires_in: Option<Duration>,
-    ) -> Result<V, E>
-    where
-        K: Into<String>,
-        V: for<'de> Deserialize<'de> + Serialize,
-        Fut: Future<Output = Result<V, E>>,
-        F: FnOnce() -> Fut + Send + 'static,
-    {
-        let key: String = key.into();
-        let data = self.get(key.clone()).await;
-        if let Some(data) = data {
-            return Ok(data);
-        }
-        let value = action_fn().await?;
-        let value = self
-            .set(key, value, expires_in)
-            .await
-            .expect("failed to set cache");
+    async fn _remove(&self, key: String) {
+        let mut storage = self.storage.write().await;
+        storage.remove(&key);
+    }
 
-        Ok(value)
+    fn _key<K: Serialize>(&self, key: K) -> String {
+        let key = serde_json::to_string(&key).expect("failed to serialize key");
+        let key = format!("{}::{}", self.prefix, key);
+        key
     }
 }
 
