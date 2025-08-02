@@ -90,6 +90,11 @@ impl MemCache {
         Ok(value)
     }
 
+    pub async fn get_map(&self) -> HashMap<String, Data> {
+        let storage = self.storage.read().await;
+        storage.clone()
+    }
+
     async fn _get<V>(&self, key: String) -> Option<V>
     where
         V: for<'de> Deserialize<'de>,
