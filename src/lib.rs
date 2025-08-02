@@ -8,7 +8,7 @@ use tokio::sync::RwLock;
 
 #[derive(Debug, Clone)]
 pub struct Data {
-    pub value: Vec<u8>,
+    pub value: String,
     pub expires_at: Option<Instant>,
 }
 
@@ -109,14 +109,14 @@ impl MemCache {
             }
         }
 
-        bincode::deserialize(&data.value).ok()
+        serde_json::from_str(&data.value).ok()
     }
 
     async fn _set<V>(&self, key: String, value: V, expires_in: Option<Duration>) -> Option<V>
     where
         V: Serialize,
     {
-        let value_data = bincode::serialize(&value).ok()?;
+        let value_data = serde_json::to_string(&value).ok()?;
         let mut storage = self.storage.write().await;
         storage.insert(
             key.clone(),
